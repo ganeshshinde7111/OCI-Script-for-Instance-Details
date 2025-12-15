@@ -1,8 +1,8 @@
 # This script collects comprehensive details of all OCI instances across a tenancy and outputs the information in a CSV format. It includes instance metadata, network details, and associated resources. 
 # Like below Fields Included:
 
-instance_name - Display name of the instance
-instance_ocid - Instance OCID
+instance_name - Display name of the instance\
+instance_ocid - Instance OCID\
 lifecycle_state - Current state (RUNNING, STOPPED, etc.)
 region - Region where instance is located
 compartment_name - Name of the compartment
