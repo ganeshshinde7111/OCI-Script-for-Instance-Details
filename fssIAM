@@ -62,3 +62,7 @@ Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-system-snapshots
 4. Retry creating the snapshot policy for the file system
 
 The unauthorized access errors should now be resolved for both issues.
+
+
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-system-snapshots in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage filesystem-snapshot-policies in tenancy where request.permission!='*_DELETE'
