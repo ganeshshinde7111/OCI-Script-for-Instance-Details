@@ -1,0 +1,26 @@
+Statements
+
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage instance-family in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-family in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage object-family in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage boot-volume in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to use cloud-shell in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to read all-resources in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage stack-monitoring-family in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to use virtual-network-family in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage alarms in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to read metrics in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage ons-topics in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage ons-subscriptions in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage volume-family in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage block-volume in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage load-balancers in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to use keys in compartment HOME:BFL-OCI-SHARED:BFL-OCI-SHARED-SEC
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to use vaults in compartment HOME:BFL-OCI-SHARED:BFL-OCI-SHARED-SEC
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage volumes in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage backup-policies in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage volume-backups in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage tag-namespaces in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage tag-defaults in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage management-agents in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to use management-agent-plugins in tenancy
