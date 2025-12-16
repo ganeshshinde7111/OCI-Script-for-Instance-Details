@@ -1,0 +1,64 @@
+The issue with creating snapshot policies for file systems is due to **missing FSS (File Storage Service) snapshot policy permissions**. Here's the problem and solution:
+
+## Root Cause
+
+The user currently has:
+```
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-family in tenancy where request.permission!='*_DELETE'
+```
+
+While `file-family` includes many FSS resources, **snapshot policies require specific permissions** that may not be fully covered, especially when working with file system snapshots and their policies.
+
+## Required Permissions for FSS Snapshot Policies
+
+To create and manage snapshot policies for file systems, add these specific permissions:
+
+### 1. **File System Snapshot Policy Management**
+```
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-systems in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage mount-targets in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage export-sets in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-system-snapshots in tenancy where request.permission!='*_DELETE'
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage filesystem-snapshot-policies in tenancy where request.permission!='*_DELETE'
+```
+
+## Complete Solution
+
+Since the user already has `manage file-family`, you should verify if the issue is related to **compartment-level restrictions**. The current policy applies at the tenancy level, but if the file systems are in specific compartments, you might need compartment-specific permissions.
+
+### Option 1: If file-family should cover it (check for other issues)
+Verify:
+- The user is trying to create the snapshot policy in the correct compartment
+- There are no deny policies blocking this action
+- The file system exists and is accessible
+
+### Option 2: Add explicit snapshot policy permissions (recommended)
+Replace or supplement the existing `file-family` policy with more granular permissions:
+
+```
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage filesystem-snapshot-policies in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-system-snapshots in tenancy where request.permission!='*_DELETE'
+```
+
+## Summary of All Missing Permissions
+
+To resolve both the **customer-managed key** and **FSS snapshot policy** issues, add these policies:
+
+```
+# For Customer-Managed Keys on Volumes
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage keys in compartment HOME:BFL-OCI-SHARED:BFL-OCI-SHARED-SEC
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to use key-delegate in compartment HOME:BFL-OCI-SHARED:BFL-OCI-SHARED-SEC
+
+# For FSS Snapshot Policies
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage filesystem-snapshot-policies in tenancy
+Allow group BFL-OCI-IDT/SG-BFL-OCI-PRD-SRV-ADMIN to manage file-system-snapshots in tenancy where request.permission!='*_DELETE'
+```
+
+## Verification Steps
+
+1. Add the policies through OCI Console or CLI
+2. Wait 1-2 minutes for policy propagation
+3. Have the user log out and log back in
+4. Retry creating the snapshot policy for the file system
+
+The unauthorized access errors should now be resolved for both issues.
