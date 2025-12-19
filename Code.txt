@@ -654,36 +654,38 @@ def fetch_instance_details():
     
     return all_instances
 
+
 def export_to_csv(instances, filename='oci_instances.csv'):
     """Export instance details to CSV"""
-    
     if not instances:
         print("\nNo instances found to export.")
         return
-    
-    # Define CSV headers with reorganized column order
+
+    # Define CSV headers with reorganized column order (aligned with instance_details)
     headers = [
         'instance_name', 'instance_ocid', 'lifecycle_state', 'region',
         'compartment_name', 'compartment_id', 'availability_domain', 'fault_domain',
         'shape', 'shape_ocpus', 'shape_memory_gb',
-        'image_name', 'image_id', 'os_family',
+        'image_name', 'image_id', 'os_family', 'os_version',          # <-- added os_version
         'private_ips', 'public_ips', 'vcns', 'subnets',
         'boot_volume_name', 'boot_volume_size_gb',
         'boot_volume_in_transit_encryption', 'boot_volume_backup_enabled',
         'boot_volume_group', 'boot_volume_backup_policy',
         'boot_volume_customer_managed_key', 'boot_volume_kms_key_name', 'boot_volume_kms_key_id',
-        'block_volumes_count', 'block_volumes_backup_status', 'block_volumes',
-        'block_volumes_backup_enabled', 'attached_volume_groups', 'block_volumes_backup_policies',
-        'block_volumes_kms_key_status', 'block_volume_kms_key_name', 'block_volumes_customer_managed_keys',
+        'block_volumes_count', 'block_volumes', 'block_volumes_backup_status',
+        'block_volumes_backup_enabled', 'block_volume_groups',         # <-- renamed to block_volume_groups
+        'block_volumes_backup_policies',
+        'block_volumes_kms_key_status', 'block_volume_kms_key_name',
+        'block_volumes_customer_managed_keys',
         'platform_config', 'time_created', 'freeform_tags', 'defined_tags'
     ]
-    
-    # Write to CSV
+
+    # Write to CSV (ignore any future extra keys to avoid crashes)
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=headers)
+        writer = csv.DictWriter(csvfile, fieldnames=headers, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(instances)
-    
+
     print(f"\n{'=' * 70}")
     print(f"✓ Successfully exported {len(instances)} instances to {filename}")
     print(f"{'=' * 70}")
