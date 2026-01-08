@@ -1,0 +1,740 @@
+#!/usr/bin/env python3
+"""
+OCI Instance Details Exporter
+Fetches comprehensive instance details from Oracle Cloud Infrastructure and exports to CSV
+
+Author: Ganesh Ramchandra Shinde
+Email: ganesh.shinde20@bajajfinserv.in
+Mobile: 8412052128
+Organization: Bajaj Finserv
+Version: 2.0
+Last Updated: December 2024
+
+Description:
+    This script collects detailed information about all OCI compute instances across
+    all regions and compartments in a tenancy, including:
+    - Instance configuration and metadata
+    - Network details (IPs, VCNs, subnets)
+    - Storage details (boot volumes, block volumes)
+    - Encryption status (in-transit and KMS keys)
+    - Backup policies and volume groups
+    - Platform configuration
+
+Usage:
+    python3 oci_instance_exporter.py
+
+Requirements:
+    - Python 3.6+
+    - OCI Python SDK (pip install oci)
+    - OCI CLI configuration at ~/.oci/config
+    - Appropriate IAM permissions for read access
+
+Output:
+    CSV file: oci_instances_YYYYMMDD_HHMMSS.csv
+"""
+
+import oci
+import csv
+from datetime import datetime
+import json
+
+# Cache for KMS key names to avoid repeated API calls
+kms_key_cache = {}
+# Cache for identity client to reuse across regions
+identity_client_cache = None
+# Cache for all vaults (compartment_id -> list of vaults)
+vaults_cache = {}
+
+def get_compartment_name(identity_client, compartment_id):
+    """Get compartment name from compartment ID"""
+    try:
+        compartment = identity_client.get_compartment(compartment_id).data
+        return compartment.name
+    except:
+        return compartment_id
+
+def get_kms_key_name_from_id(config, kms_key_id):
+    """
+    Get KMS key name from key OCID - Using exact logic from working vault script
+    """
+    global identity_client_cache, vaults_cache
+    
+    if not kms_key_id:
+        return ''
+    
+    # Check cache first
+    if kms_key_id in kms_key_cache:
+        cached_name = kms_key_cache[kms_key_id]
+        return cached_name
+    
+    try:
+        # Initialize identity client if needed
+        if identity_client_cache is None:
+            identity_client_cache = oci.identity.IdentityClient(config)
+        
+        # Get all compartments (same as working script)
+        compartments = [config['tenancy']]
+        try:
+            all_comps = oci.pagination.list_call_get_all_results(
+                identity_client_cache.list_compartments,
+                config['tenancy'],
+                compartment_id_in_subtree=True,
+                access_level="ACCESSIBLE"
+            ).data
+            
+            for c in all_comps:
+                if c.lifecycle_state == "ACTIVE":
+                    compartments.append(c.id)
+        except Exception as e:
+            pass  # Silently continue
+        
+        # Initialize KMS vault client
+        vault_client = oci.key_management.KmsVaultClient(config)
+        
+        # Search through each compartment (same as working script)
+        for compartment_id in compartments:
+            try:
+                # Get vaults in this compartment (same as working script)
+                if compartment_id not in vaults_cache:
+                    vaults_response = oci.pagination.list_call_get_all_results(
+                        vault_client.list_vaults,
+                        compartment_id=compartment_id
+                    )
+                    vaults_cache[compartment_id] = vaults_response.data
+                
+                vaults = vaults_cache[compartment_id]
+                
+                # Check each vault (same as working script)
+                for vault in vaults:
+                    if vault.lifecycle_state == 'ACTIVE':
+                        try:
+                            # EXACT SAME approach as working script
+                            kms_management_client = oci.key_management.KmsManagementClient(
+                                config,
+                                service_endpoint=vault.management_endpoint
+                            )
+                            
+                            # Try to get the key (same as working script)
+                            key = kms_management_client.get_key(kms_key_id).data
+                            key_name = key.display_name
+                            
+                            # Cache and return
+                            kms_key_cache[kms_key_id] = key_name
+                            return key_name
+                            
+                        except oci.exceptions.ServiceError as e:
+                            if e.status == 404:
+                                # Key not in this vault, continue
+                                continue
+                            else:
+                                continue
+                        except Exception as e:
+                            # Any other error, continue to next vault
+                            continue
+                            
+            except Exception as e:
+                # Error with this compartment, continue to next
+                continue
+        
+        # Cache empty result
+        kms_key_cache[kms_key_id] = ''
+        return ''
+        
+    except Exception as e:
+        # Cache empty result
+        kms_key_cache[kms_key_id] = ''
+        return ''
+
+def get_kms_key_details(kms_vault_client, kms_key_id):
+    """Get KMS key name from key OCID"""
+    if not kms_key_id:
+        return '', 'No'
+    
+    # Check cache first
+    if kms_key_id in kms_key_cache:
+        return kms_key_cache[kms_key_id], 'Yes'
+    
+    try:
+        # Extract vault endpoint from key OCID
+        # Key OCID format: ocid1.key.region.vault-ocid.key-id
+        key = kms_vault_client.get_key(kms_key_id).data
+        key_name = key.display_name
+        kms_key_cache[kms_key_id] = key_name
+        return key_name, 'Yes'
+    except Exception as e:
+        # If we can't get the name, just return the OCID
+        kms_key_cache[kms_key_id] = kms_key_id
+        return kms_key_id, 'Yes'
+
+def get_image_details(compute_client, image_id):
+    """Get image name, OS family, and OS version"""
+    try:
+        image = compute_client.get_image(image_id).data
+        image_name = image.display_name
+        os_family = image.operating_system
+        os_version = image.operating_system_version if hasattr(image, 'operating_system_version') else ''
+        return image_name, os_family, os_version
+    except:
+        return image_id, "Unknown", ""
+
+def get_vnic_details(virtual_network_client, vnic_id):
+    """Get VNIC details including IPs, subnet, and VCN"""
+    try:
+        vnic = virtual_network_client.get_vnic(vnic_id).data
+        subnet = virtual_network_client.get_subnet(vnic.subnet_id).data
+        vcn = virtual_network_client.get_vcn(subnet.vcn_id).data
+        
+        return {
+            'private_ip': vnic.private_ip,
+            'public_ip': vnic.public_ip if vnic.public_ip else '',
+            'subnet_id': vnic.subnet_id,
+            'subnet_name': subnet.display_name,
+            'vcn_id': subnet.vcn_id,
+            'vcn_name': vcn.display_name
+        }
+    except:
+        return None
+
+def get_volume_group_backup_policy(block_storage_client, volume_group_id):
+    """Get backup policy assigned to a volume group"""
+    try:
+        policy_assignments = block_storage_client.get_volume_backup_policy_asset_assignment(
+            asset_id=volume_group_id
+        ).data
+        
+        if policy_assignments:
+            policies = []
+            for assignment in policy_assignments:
+                try:
+                    policy = block_storage_client.get_volume_backup_policy(
+                        assignment.policy_id
+                    ).data
+                    policies.append(policy.display_name)
+                except:
+                    policies.append(assignment.policy_id)
+            return '; '.join(policies) if policies else ''
+    except:
+        pass
+    return ''
+
+def get_volume_group_info(block_storage_client, volume_id):
+    """Get volume group information for a volume"""
+    try:
+        # List all volume groups in the compartment (we'll need to pass compartment_id)
+        # For now, we'll check if volume is part of any group by checking volume details
+        volume = block_storage_client.get_volume(volume_id).data
+        if hasattr(volume, 'volume_group_id') and volume.volume_group_id:
+            try:
+                volume_group = block_storage_client.get_volume_group(
+                    volume.volume_group_id
+                ).data
+                return volume_group.display_name
+            except:
+                return volume.volume_group_id
+    except:
+        pass
+    return ''
+
+def get_boot_volume_details(compute_client, block_storage_client, config, availability_domain, compartment_id, instance_id):
+    """Get boot volume details including encryption and backup info"""
+    try:
+        boot_volume_attachments = oci.pagination.list_call_get_all_results(
+            compute_client.list_boot_volume_attachments,
+            availability_domain=availability_domain,
+            compartment_id=compartment_id,
+            instance_id=instance_id
+        ).data
+        
+        if boot_volume_attachments:
+            attachment = boot_volume_attachments[0]
+            boot_volume_id = attachment.boot_volume_id
+            boot_volume = block_storage_client.get_boot_volume(boot_volume_id).data
+            
+
+            
+            # Check in-transit encryption
+            in_transit_encryption = 'No'
+            if hasattr(attachment, 'is_pv_encryption_in_transit_enabled'):
+                in_transit_encryption = 'Yes' if attachment.is_pv_encryption_in_transit_enabled else 'No'
+            
+            # Check if boot volume is in a volume group
+            volume_group_name = ''
+            backup_enabled = 'No'
+            backup_policy = ''
+            
+            if hasattr(boot_volume, 'volume_group_id') and boot_volume.volume_group_id:
+                try:
+                    volume_group = block_storage_client.get_volume_group(
+                        boot_volume.volume_group_id
+                    ).data
+                    volume_group_name = volume_group.display_name
+                    
+                    # Check if volume group has backup policy
+                    vg_backup_policy = get_volume_group_backup_policy(
+                        block_storage_client, boot_volume.volume_group_id
+                    )
+                    if vg_backup_policy:
+                        backup_enabled = 'Yes'
+                        backup_policy = vg_backup_policy
+                except Exception as e:
+                    print(f"      Warning: Could not get volume group details: {str(e)}")
+            
+            # Check for customer-managed key
+            kms_key_name = ''
+            kms_key_id = ''
+            customer_managed_key = 'No'
+            
+            if hasattr(boot_volume, 'kms_key_id'):
+                actual_key_id = boot_volume.kms_key_id
+                
+                if actual_key_id:
+                    customer_managed_key = 'Yes'
+                    kms_key_id = actual_key_id
+                    
+                    try:
+                        # Get key name silently
+                        kms_key_name = get_kms_key_name_from_id(config, actual_key_id)
+                    except Exception as e:
+                        pass  # Silently continue
+            
+            return {
+                'name': boot_volume.display_name,
+                'size_gb': boot_volume.size_in_gbs,
+                'in_transit_encryption': in_transit_encryption,
+                'volume_group': volume_group_name,
+                'backup_enabled': backup_enabled,
+                'backup_policy': backup_policy,
+                'customer_managed_key': customer_managed_key,
+                'kms_key_id': kms_key_id,
+                'kms_key_name': kms_key_name
+            }
+    except Exception as e:
+        print(f"    Error getting boot volume details: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    
+    return {
+        'name': '',
+        'size_gb': '',
+        'in_transit_encryption': '',
+        'volume_group': '',
+        'backup_enabled': '',
+        'backup_policy': '',
+        'customer_managed_key': '',
+        'kms_key_id': '',
+        'kms_key_name': ''
+    }
+
+def get_block_volumes(compute_client, block_storage_client, config, compartment_id, instance_id):
+    """Get attached block volumes with backup, volume group, and CMK info"""
+    try:
+        volume_attachments = oci.pagination.list_call_get_all_results(
+            compute_client.list_volume_attachments,
+            compartment_id=compartment_id,
+            instance_id=instance_id
+        ).data
+        
+        volumes = []
+        volume_groups = []
+        backup_policies = []
+        backup_enabled_list = []
+        customer_managed_keys = []
+        kms_key_names = []
+        
+        # Track overall backup status
+        all_backups_enabled = True
+        has_volumes = False
+        
+        # Track overall KMS key status
+        all_kms_enabled = True
+        
+        for attachment in volume_attachments:
+            try:
+                volume = block_storage_client.get_volume(attachment.volume_id).data
+                has_volumes = True
+                
+                # Volume basic info
+                volume_info = f"{volume.display_name}:{volume.size_in_gbs}GB"
+                volumes.append(volume_info)
+                
+                # Check if volume is in a volume group
+                vol_group_name = ''
+                backup_enabled = 'No'
+                backup_policy = ''
+                
+                if hasattr(volume, 'volume_group_id') and volume.volume_group_id:
+                    try:
+                        volume_group = block_storage_client.get_volume_group(
+                            volume.volume_group_id
+                        ).data
+                        vol_group_name = volume_group.display_name
+                        volume_groups.append(f"{volume.display_name}:{vol_group_name}")
+                        
+                        # Check if volume group has backup policy
+                        vg_backup_policy = get_volume_group_backup_policy(
+                            block_storage_client, volume.volume_group_id
+                        )
+                        if vg_backup_policy:
+                            backup_enabled = 'Yes'
+                            backup_policy = vg_backup_policy
+                            backup_policies.append(f"{volume.display_name}:{backup_policy}")
+                    except Exception as e:
+                        pass  # Silently continue
+                
+                backup_enabled_list.append(f"{volume.display_name}:{backup_enabled}")
+                
+                # Track if any volume doesn't have backup enabled
+                if backup_enabled == 'No':
+                    all_backups_enabled = False
+                
+                # Customer-managed key
+                volume_has_cmk = False
+                
+                if hasattr(volume, 'kms_key_id'):
+                    actual_key_id = volume.kms_key_id
+                    
+                    if actual_key_id:
+                        volume_has_cmk = True
+                        try:
+                            # Get key name silently
+                            key_name = get_kms_key_name_from_id(config, actual_key_id)
+                            if key_name:
+                                customer_managed_keys.append(f"{volume.display_name}:Yes:{key_name}:{actual_key_id}")
+                                kms_key_names.append(f"{volume.display_name}:{key_name}")
+                            else:
+                                customer_managed_keys.append(f"{volume.display_name}:Yes:{actual_key_id}")
+                                kms_key_names.append(f"{volume.display_name}:(not found)")
+                        except Exception as e:
+                            customer_managed_keys.append(f"{volume.display_name}:Yes:{actual_key_id}")
+                            kms_key_names.append(f"{volume.display_name}:(error)")
+                    else:
+                        customer_managed_keys.append(f"{volume.display_name}:No")
+                        kms_key_names.append(f"{volume.display_name}:No")
+                else:
+                    customer_managed_keys.append(f"{volume.display_name}:No")
+                    kms_key_names.append(f"{volume.display_name}:No")
+                
+                # Track if any volume doesn't have CMK
+                if not volume_has_cmk:
+                    all_kms_enabled = False
+                
+            except Exception as e:
+                continue  # Silently continue
+        
+        # Determine overall backup status
+        overall_backup_status = 'Yes' if (has_volumes and all_backups_enabled) else ('No' if has_volumes else '')
+        
+        # Determine overall KMS key status
+        overall_kms_status = 'Yes' if (has_volumes and all_kms_enabled) else ('No' if has_volumes else '')
+        
+        return {
+            'count': len(volumes),
+            'volumes': '; '.join(volumes) if volumes else '',
+            'volume_groups': '; '.join(volume_groups) if volume_groups else '',
+            'backup_status': overall_backup_status,
+            'backup_enabled': '; '.join(backup_enabled_list) if backup_enabled_list else '',
+            'backup_policies': '; '.join(backup_policies) if backup_policies else '',
+            'kms_key_status': overall_kms_status,
+            'kms_key_names': '; '.join(kms_key_names) if kms_key_names else '',
+            'customer_managed_keys': '; '.join(customer_managed_keys) if customer_managed_keys else ''
+        }
+    except Exception as e:
+        pass  # Silently continue
+    
+    return {
+        'count': 0,
+        'volumes': '',
+        'volume_groups': '',
+        'backup_status': '',
+        'backup_enabled': '',
+        'backup_policies': '',
+        'kms_key_status': '',
+        'kms_key_names': '',
+        'customer_managed_keys': ''
+    }
+
+def get_all_vnics(compute_client, virtual_network_client, compartment_id, instance_id):
+    """Get all VNICs attached to an instance"""
+    try:
+        vnic_attachments = oci.pagination.list_call_get_all_results(
+            compute_client.list_vnic_attachments,
+            compartment_id=compartment_id,
+            instance_id=instance_id
+        ).data
+        
+        private_ips = []
+        public_ips = []
+        vcns = []
+        subnets = []
+        
+        for attachment in vnic_attachments:
+            if attachment.lifecycle_state == "ATTACHED":
+                vnic_details = get_vnic_details(virtual_network_client, attachment.vnic_id)
+                if vnic_details:
+                    if vnic_details['private_ip']:
+                        private_ips.append(vnic_details['private_ip'])
+                    if vnic_details['public_ip']:
+                        public_ips.append(vnic_details['public_ip'])
+                    if vnic_details['vcn_name'] not in vcns:
+                        vcns.append(vnic_details['vcn_name'])
+                    if vnic_details['subnet_name'] not in subnets:
+                        subnets.append(vnic_details['subnet_name'])
+        
+        return {
+            'private_ips': '; '.join(private_ips),
+            'public_ips': '; '.join(public_ips),
+            'vcns': '; '.join(vcns),
+            'subnets': '; '.join(subnets)
+        }
+    except Exception as e:
+        print(f"    Error getting VNICs: {str(e)}")
+        return {'private_ips': '', 'public_ips': '', 'vcns': '', 'subnets': ''}
+
+def get_platform_config(instance):
+    """Get platform configuration details"""
+    try:
+        if hasattr(instance, 'platform_config') and instance.platform_config:
+            config_type = instance.platform_config.type if hasattr(instance.platform_config, 'type') else 'Unknown'
+            return config_type
+    except:
+        pass
+    return ''
+
+def list_all_compartments(identity_client, tenancy_id):
+    """List all compartments in the tenancy including root"""
+    compartments = [tenancy_id]
+    try:
+        all_compartments = oci.pagination.list_call_get_all_results(
+            identity_client.list_compartments,
+            tenancy_id,
+            compartment_id_in_subtree=True
+        ).data
+        
+        for compartment in all_compartments:
+            if compartment.lifecycle_state == "ACTIVE":
+                compartments.append(compartment.id)
+    except Exception as e:
+        print(f"Error listing compartments: {str(e)}")
+    
+    return compartments
+
+def fetch_instance_details():
+    """Main function to fetch all instance details"""
+    
+    global identity_client_cache
+    
+    # Initialize OCI config and clients
+    config = oci.config.from_file()
+    
+    identity_client = oci.identity.IdentityClient(config)
+    identity_client_cache = identity_client  # Cache for KMS key searches
+    
+    compute_client = oci.core.ComputeClient(config)
+    virtual_network_client = oci.core.VirtualNetworkClient(config)
+    block_storage_client = oci.core.BlockstorageClient(config)
+    
+    # Get tenancy ID
+    tenancy_id = config["tenancy"]
+    
+    # Get all regions
+    regions = identity_client.list_region_subscriptions(tenancy_id).data
+    
+    all_instances = []
+    
+    print("Fetching instance details from all regions...")
+    print("=" * 70)
+    
+    for region in regions:
+        print(f"\nProcessing region: {region.region_name}")
+        print("-" * 70)
+        
+        # Update config for current region
+        config["region"] = region.region_name
+        
+        # Re-initialize clients for new region
+        compute_client = oci.core.ComputeClient(config)
+        virtual_network_client = oci.core.VirtualNetworkClient(config)
+        block_storage_client = oci.core.BlockstorageClient(config)
+        
+        # Get all compartments
+        compartments = list_all_compartments(identity_client, tenancy_id)
+        
+        for compartment_id in compartments:
+            try:
+                # List instances in compartment
+                instances = oci.pagination.list_call_get_all_results(
+                    compute_client.list_instances,
+                    compartment_id=compartment_id
+                ).data
+                
+                for instance in instances:
+                    print(f"  Processing instance: {instance.display_name}")
+                    
+                    # Get compartment name
+                    compartment_name = get_compartment_name(identity_client, compartment_id)
+                    
+                    # Get image details including OS version
+                    image_name, os_family, os_version = get_image_details(compute_client, instance.image_id) if instance.image_id else ('', '', '')
+                    
+                    # Get shape details
+                    shape_ocpus = ''
+                    shape_memory_gb = ''
+                    if hasattr(instance, 'shape_config') and instance.shape_config:
+                        shape_ocpus = instance.shape_config.ocpus if hasattr(instance.shape_config, 'ocpus') else ''
+                        shape_memory_gb = instance.shape_config.memory_in_gbs if hasattr(instance.shape_config, 'memory_in_gbs') else ''
+                    
+                    # Get VNIC details
+                    vnic_info = get_all_vnics(compute_client, virtual_network_client, compartment_id, instance.id)
+                    
+                    # Get boot volume details with encryption and backup info
+                    boot_volume_details = get_boot_volume_details(
+                        compute_client, block_storage_client, config,
+                        instance.availability_domain, compartment_id, instance.id
+                    )
+                    
+                    # Get block volumes with encryption, backup, and volume group info
+                    block_volume_details = get_block_volumes(
+                        compute_client, block_storage_client, config,
+                        compartment_id, instance.id
+                    )
+                    
+                    # Get platform config
+                    platform_config = get_platform_config(instance)
+                    
+                    # Prepare instance details with reordered columns
+                    instance_details = {
+                        'instance_name': instance.display_name,
+                        'instance_ocid': instance.id,
+                        'lifecycle_state': instance.lifecycle_state,
+                        'region': region.region_name,
+                        'compartment_name': compartment_name,
+                        'compartment_id': compartment_id,
+                        'availability_domain': instance.availability_domain,
+                        'fault_domain': instance.fault_domain if instance.fault_domain else '',
+                        'shape': instance.shape,
+                        'shape_ocpus': shape_ocpus,
+                        'shape_memory_gb': shape_memory_gb,
+                        'image_name': image_name,
+                        'image_id': instance.image_id if instance.image_id else '',
+                        'os_family': os_family,
+                        'os_version': os_version,
+                        'private_ips': vnic_info['private_ips'],
+                        'public_ips': vnic_info['public_ips'],
+                        'vcns': vnic_info['vcns'],
+                        'subnets': vnic_info['subnets'],
+                        'boot_volume_name': boot_volume_details['name'],
+                        'boot_volume_size_gb': boot_volume_details['size_gb'],
+                        'boot_volume_in_transit_encryption': boot_volume_details['in_transit_encryption'],
+                        'boot_volume_backup_enabled': boot_volume_details['backup_enabled'],
+                        'boot_volume_group': boot_volume_details['volume_group'],
+                        'boot_volume_backup_policy': boot_volume_details['backup_policy'],
+                        'boot_volume_customer_managed_key': boot_volume_details['customer_managed_key'],
+                        'boot_volume_kms_key_name': boot_volume_details['kms_key_name'],
+                        'boot_volume_kms_key_id': boot_volume_details['kms_key_id'],
+                        'block_volumes_count': block_volume_details['count'],
+                        'block_volumes': block_volume_details['volumes'],
+                        'block_volumes_backup_status': block_volume_details['backup_status'],
+                        'block_volumes_backup_enabled': block_volume_details['backup_enabled'],
+                        'block_volume_groups': block_volume_details['volume_groups'],
+                        'block_volumes_backup_policies': block_volume_details['backup_policies'],
+                        'block_volumes_kms_key_status': block_volume_details['kms_key_status'],
+                        'block_volume_kms_key_name': block_volume_details['kms_key_names'],
+                        'block_volumes_customer_managed_keys': block_volume_details['customer_managed_keys'],
+                        'platform_config': platform_config,
+                        'time_created': instance.time_created.strftime('%Y-%m-%d %H:%M:%S') if instance.time_created else '',
+                        'freeform_tags': json.dumps(instance.freeform_tags) if instance.freeform_tags else '{}',
+                        'defined_tags': json.dumps(instance.defined_tags) if instance.defined_tags else '{}'
+                    }
+                    
+                    all_instances.append(instance_details)
+                    
+            except Exception as e:
+                print(f"  Error processing compartment {compartment_id}: {str(e)}")
+                continue
+    
+    return all_instances
+
+
+def export_to_csv(instances, filename='oci_instances.csv'):
+    """Export instance details to CSV"""
+    if not instances:
+        print("\nNo instances found to export.")
+        return
+
+    # Define CSV headers with reorganized column order (aligned with instance_details)
+    headers = [
+        'instance_name', 'instance_ocid', 'lifecycle_state', 'region',
+        'compartment_name', 'compartment_id', 'availability_domain', 'fault_domain',
+        'shape', 'shape_ocpus', 'shape_memory_gb',
+        'image_name', 'image_id', 'os_family', 'os_version',          # <-- added os_version
+        'private_ips', 'public_ips', 'vcns', 'subnets',
+        'boot_volume_name', 'boot_volume_size_gb',
+        'boot_volume_in_transit_encryption', 'boot_volume_backup_enabled',
+        'boot_volume_group', 'boot_volume_backup_policy',
+        'boot_volume_customer_managed_key', 'boot_volume_kms_key_name', 'boot_volume_kms_key_id',
+        'block_volumes_count', 'block_volumes', 'block_volumes_backup_status',
+        'block_volumes_backup_enabled', 'block_volume_groups',         # <-- renamed to block_volume_groups
+        'block_volumes_backup_policies',
+        'block_volumes_kms_key_status', 'block_volume_kms_key_name',
+        'block_volumes_customer_managed_keys',
+        'platform_config', 'time_created', 'freeform_tags', 'defined_tags'
+    ]
+
+    # Write to CSV (ignore any future extra keys to avoid crashes)
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=headers, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(instances)
+
+    print(f"\n{'=' * 70}")
+    print(f"✓ Successfully exported {len(instances)} instances to {filename}")
+    print(f"{'=' * 70}")
+
+if __name__ == "__main__":
+    print("\n" + "=" * 70)
+    print(" " * 15 + "OCI Instance Details Exporter")
+    print("=" * 70)
+    print(f"\nAuthor: Ganesh Ramchandra Shinde")
+    print(f"Email: ganesh.shinde20@bajajfinserv.in")
+    print(f"Version: 2.0")
+    print("=" * 70)
+    print("\nCollecting comprehensive instance information including:")
+    print("  • Instance configuration and metadata")
+    print("  • Network details (IPs, VCNs, subnets)")
+    print("  • Storage details (boot volumes, block volumes)")
+    print("  • In-transit encryption status")
+    print("  • Backup policies and status")
+    print("  • Volume group assignments")
+    print("  • Customer-managed encryption keys (KMS)")
+    print("=" * 70)
+    
+    # Clear ALL caches to avoid stale data issues
+    kms_key_cache.clear()
+    vaults_cache.clear()
+    
+    try:
+        # Fetch all instance details
+        instances = fetch_instance_details()
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'oci_instances_{timestamp}.csv'
+        
+        # Export to CSV
+        export_to_csv(instances, filename)
+        
+        print("\n" + "=" * 70)
+        print(f"SUMMARY:")
+        print(f"  Total instances found: {len(instances)}")
+        print(f"  Output file: {filename}")
+        print("=" * 70)
+        print("\n✓ Export completed successfully!\n")
+        
+    except Exception as e:
+        print(f"\n{'=' * 70}")
+        print(f"✗ ERROR: {str(e)}")
+        print(f"{'=' * 70}\n")
+        import traceback
+        traceback.print_exc()
+
+
